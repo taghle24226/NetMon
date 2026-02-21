@@ -38,7 +38,7 @@ const parseJwt = (token) => {
   }
 };
 
-const API_BASE = 'http://localhost:8000/api';
+const API_BASE = 'https://netmon-qvt8.onrender.com/api';
 
 // ======================
 // API UTILITY FUNCTIONS
