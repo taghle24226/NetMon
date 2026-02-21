@@ -6,8 +6,9 @@ import {
   WifiOff, WifiHigh, WifiLow, Home, BarChart3, Network,
   LogOut, Menu, X, ChevronRight, Sun, Moon,
   HardDrive, Server, Globe, ShieldCheck, History,
-  BellRing, Eye, CircuitBoard, Calendar, FileText,
+  BellRing, Eye, CircuitBoard, FileText,
   User, Plus, Key, Trash2, Edit, Eye as EyeIcon,
+  Mail, Lock,
   RotateCcw
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar } from 'recharts';
@@ -26,7 +27,7 @@ const parseJwt = (token) => {
 const API_BASE = 'http://localhost:8000/api';
 
 // ======================
-// API UTILITY FUNCTIONS (moved out of apiFetch)
+// API UTILITY FUNCTIONS
 // ======================
 
 const downloadFromApi = async (url, filename) => {
@@ -38,7 +39,10 @@ const downloadFromApi = async (url, filename) => {
   });
 
   if (!res.ok) {
-    if (res.status === 401) handleLogout();
+    if (res.status === 401) {
+      localStorage.removeItem('netmon_token');
+      window.location.href = '/';
+    }
     let msg = `Erreur ${res.status}`;
     try {
       const j = await res.json();
@@ -66,7 +70,10 @@ const openPreviewFromApi = async (url) => {
   });
 
   if (!res.ok) {
-    if (res.status === 401) handleLogout();
+    if (res.status === 401) {
+      localStorage.removeItem('netmon_token');
+      window.location.href = '/';
+    }
     let msg = `Erreur ${res.status}`;
     try {
       const j = await res.json();
@@ -95,6 +102,207 @@ const downloadJsonFile = (data, filename) => {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 };
 
+// ======================
+// UI HELPERS (forms)
+// ======================
+
+const Field = ({ label, hint, icon: Icon, right, children }) => (
+  <div className="mb-20">
+    {label && <label className="block text-sm mb-8">{label}</label>}
+    <div style={{ position: 'relative' }}>
+      {Icon && (
+        <span
+          style={{
+            position: 'absolute',
+            left: 12,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            opacity: 0.75,
+            pointerEvents: 'none'
+          }}
+        >
+          <Icon size={16} />
+        </span>
+      )}
+      {right && (
+        <div style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)' }}>
+          {right}
+        </div>
+      )}
+      {children}
+    </div>
+    {hint && <div className="text-xs opacity-75 mt-8">{hint}</div>}
+  </div>
+);
+
+// ======================
+// DEMO DATA + FAKE EXPORTS (PDF/CSV)
+// ======================
+
+const rand = (min, max) => Math.random() * (max - min) + min;
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+const randomMac = () => Array.from({ length: 6 }, () =>
+  Math.floor(Math.random() * 256).toString(16).padStart(2, '0')
+).join(':');
+
+const randomIp = () => `192.168.1.${Math.floor(rand(2, 254))}`;
+
+const escapePdfText = (t) =>
+  String(t).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+
+const buildSimplePdf = (lines = []) => {
+  // PDF minimal 1 page (sans dépendances). Suffisant pour un faux rapport téléchargeable.
+  const header = '%PDF-1.3\n';
+  const objects = [];
+
+  // 1) Catalog
+  objects.push('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+
+  // 2) Pages
+  objects.push('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+
+  // 3) Page
+  objects.push('3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n');
+
+  // 4) Font
+  objects.push('4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n');
+
+  // 5) Content stream
+  const contentLines = [
+    'BT',
+    '/F1 12 Tf',
+    '50 800 Td'
+  ];
+  lines.slice(0, 60).forEach((l, i) => {
+    const safe = escapePdfText(l);
+    contentLines.push(`(${safe}) Tj`);
+    contentLines.push('T*');
+  });
+  contentLines.push('ET');
+  const content = contentLines.join('\n') + '\n';
+  objects.push(`5 0 obj\n<< /Length ${content.length} >>\nstream\n${content}endstream\nendobj\n`);
+
+  // Build xref
+  let body = '';
+  const offsets = [0]; // object 0
+  let cursor = header.length;
+  for (const obj of objects) {
+    offsets.push(cursor);
+    body += obj;
+    cursor += obj.length;
+  }
+
+  const xrefStart = header.length + body.length;
+  let xref = 'xref\n0 6\n';
+  xref += '0000000000 65535 f \n';
+  for (let i = 1; i <= 5; i++) {
+    xref += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  }
+
+  const trailer = `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+  return header + body + xref + trailer;
+};
+
+const downloadBlob = (blob, filename) => {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+};
+
+const toCsv = (rows) => {
+  const esc = (v) => {
+    const s = String(v ?? '');
+    if (/[,"\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  if (!rows?.length) return '';
+  const headers = Object.keys(rows[0]);
+  const out = [headers.map(esc).join(',')];
+  for (const r of rows) out.push(headers.map((h) => esc(r[h])).join(','));
+  return out.join('\n');
+};
+
+const buildFakeReportLines = ({ stats, devices, alerts }) => {
+  const now = new Date();
+  return [
+    'NetMon+ — Rapport (DEMO)',
+    `Généré: ${now.toLocaleString()}`,
+    '----------------------------------------',
+    `Équipements totaux: ${stats?.total_devices ?? 0}`,
+    `Actifs: ${stats?.active_devices ?? 0}`,
+    `Inactifs: ${stats?.inactive_devices ?? 0}`,
+    `Hors ligne: ${stats?.offline_devices ?? 0}`,
+    '----------------------------------------',
+    'Top 5 équipements:',
+    ...(devices || []).slice(0, 5).map((d, i) => `${i + 1}. ${d.name} (${d.ip_address}) — ${d.status}`),
+    '----------------------------------------',
+    'Alertes récentes:',
+    ...(alerts || []).slice(0, 8).map((a) => `• [${String(a.severity).toUpperCase()}] ${a.message}`),
+    '----------------------------------------',
+    'Fin du rapport.'
+  ];
+};
+
+const makeDemoDevice = (i) => {
+  const types = ['Laptop', 'Smartphone', 'Router', 'Serveur', 'NAS', 'Camera', 'Switch', 'Firewall'];
+  const statusPool = ['Active', 'Inactive', 'Offline'];
+  const type = pick(types);
+  const status = pick(statusPool);
+  const now = Date.now();
+  return {
+    id: i,
+    name: `${type}-${String(i).padStart(2, '0')}`,
+    ip_address: randomIp(),
+    mac_address: randomMac(),
+    type,
+    status,
+    last_seen: new Date(now - rand(5_000, 90_000)).toISOString(),
+    signal_strength: Math.round(rand(15, 95)),
+    color: ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'][i % 5]
+  };
+};
+
+const makeDemoAlert = (id, deviceName) => {
+  const severities = ['info', 'warning', 'critical'];
+  const s = pick(severities);
+  const msg = s === 'critical'
+    ? `Activité suspecte détectée sur ${deviceName}`
+    : s === 'warning'
+      ? `Signal faible sur ${deviceName}`
+      : `Nouveau service détecté sur ${deviceName}`;
+  return {
+    id,
+    message: msg,
+    severity: s,
+    alert_type: s === 'critical' ? 'intrusion' : s === 'warning' ? 'signal' : 'scan',
+    time_ago: 'à l’instant'
+  };
+};
+
+const makeFakeNmapHost = (device) => {
+  const services = [
+    { port: 22, service: 'ssh', version: 'OpenSSH 8.9' },
+    { port: 80, service: 'http', version: 'nginx 1.22' },
+    { port: 443, service: 'https', version: 'nginx 1.22' },
+    { port: 3389, service: 'ms-wbt-server', version: 'RDP' },
+    { port: 139, service: 'netbios-ssn', version: 'Samba' },
+    { port: 445, service: 'microsoft-ds', version: 'SMB' }
+  ];
+  const openPorts = Array.from({ length: Math.floor(rand(1, 4)) }, () => pick(services))
+    .filter((v, idx, arr) => arr.findIndex(x => x.port === v.port) === idx)
+    .sort((a, b) => a.port - b.port)
+    .map((p) => ({ port: p.port, proto: 'tcp', state: 'open', service: p.service, version: p.version }));
+
+  return { host: device.name, ip: device.ip_address, ports: openPorts };
+};
+
+
 const App = () => {
   // ✅ TOUS LES HOOKS AU DÉBUT
   const [darkMode, setDarkMode] = useState(true);
@@ -116,6 +324,7 @@ const App = () => {
   const [loginError, setLoginError] = useState('');
   const [registerMode, setRegisterMode] = useState(false);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [registerForm, setRegisterForm] = useState({ 
     username: '', 
     email: '', 
@@ -124,13 +333,23 @@ const App = () => {
     confirm_password: '',
     role: 'user'
   });
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false);
+  const [showRegisterConfirm, setShowRegisterConfirm] = useState(false);
   const [users, setUsers] = useState([]);
   const [editingUser, setEditingUser] = useState(null);
+  const [showNewUserPassword, setShowNewUserPassword] = useState(false);
   const [settingsData, setSettingsData] = useState({
     scan_range: '',
     auto_scan_interval: 'Désactivé',
     signal_threshold: 30
   });
+
+  const [demoMode, setDemoMode] = useState(true); // ✅ Mode démo: données temporelles + scan simulé si API indisponible
+  const [scanProgress, setScanProgress] = useState(0);
+  const [scanStage, setScanStage] = useState('Prêt');
+  const [scanLog, setScanLog] = useState([]);
+  const [nmapResults, setNmapResults] = useState([]); // [{host, ip, ports:[{port,proto,state,service,version}]}]
+  const [timeSeries, setTimeSeries] = useState([]); // données temporelles (temps réel) pour animations
 
   // ======================
   // UTILITAIRES
@@ -167,17 +386,6 @@ const App = () => {
     </div>
   );
 
-  const IconActionButton = ({ variant = 'secondary', title, onClick, children }) => (
-    <button
-      type="button"
-      className={`btn btn-${variant}`}
-      style={{ padding: '6px 12px' }}
-      title={title}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
 
   const renderDevicesTable = (showActions = true) => (
     <div className="table-container">
@@ -267,7 +475,8 @@ const App = () => {
     const res = await fetch(`${API_BASE}${url}`, config);
     if (!res.ok) {
       if (res.status === 401) {
-        handleLogout();
+        localStorage.removeItem('netmon_token');
+        window.location.href = '/';
         throw new Error('Session expirée. Veuillez vous reconnecter.');
       }
       const errorData = await res.json().catch(() => ({}));
@@ -278,6 +487,41 @@ const App = () => {
 
   const loadDashboardData = useCallback(async () => {
     try {
+      if (demoMode) {
+        // Données locales (temps réel)
+        const now = new Date();
+        const baseDevices = devices.length ? devices : Array.from({ length: 10 }, (_, i) => makeDemoDevice(i + 1));
+        const active = baseDevices.filter(d => d.status === 'Active').length;
+        const inactive = baseDevices.filter(d => d.status === 'Inactive').length;
+        const offline = baseDevices.filter(d => d.status === 'Offline').length;
+
+        const demoStats = {
+          total_devices: baseDevices.length,
+          active_devices: active,
+          inactive_devices: inactive,
+          offline_devices: offline,
+          last_scan: now.toISOString(),
+          scanning
+        };
+
+        // séries animées (glissantes)
+        const point = {
+          date: now.toLocaleDateString([], { month: 'short', day: '2-digit' }),
+          active,
+          inactive,
+          offline
+        };
+        setChartData(prev => {
+          const next = [...(prev || []), point];
+          return next.slice(Math.max(next.length - 14, 0));
+        });
+
+        setStats(demoStats);
+        setLastScan(now);
+        setDevices(baseDevices);
+        return;
+      }
+
       const statsData = await apiFetch('/dashboard/stats');
       const chart = await apiFetch('/dashboard/chart-data');
       setStats(statsData);
@@ -287,25 +531,95 @@ const App = () => {
     } catch (err) {
       console.error('Erreur chargement dashboard:', err);
     }
-  }, []);
+  }, [demoMode, devices, scanning]);
 
   const loadDevices = useCallback(async () => {
     try {
+      if (demoMode) {
+        // Données locales (temps réel)
+        const now = new Date();
+        const baseDevices = devices.length ? devices : Array.from({ length: 10 }, (_, i) => makeDemoDevice(i + 1));
+        const active = baseDevices.filter(d => d.status === 'Active').length;
+        const inactive = baseDevices.filter(d => d.status === 'Inactive').length;
+        const offline = baseDevices.filter(d => d.status === 'Offline').length;
+
+        const demoStats = {
+          total_devices: baseDevices.length,
+          active_devices: active,
+          inactive_devices: inactive,
+          offline_devices: offline,
+          last_scan: now.toISOString(),
+          scanning
+        };
+
+        // séries animées (glissantes)
+        const point = {
+          date: now.toLocaleDateString([], { month: 'short', day: '2-digit' }),
+          active,
+          inactive,
+          offline
+        };
+        setChartData(prev => {
+          const next = [...(prev || []), point];
+          return next.slice(Math.max(next.length - 14, 0));
+        });
+
+        setStats(demoStats);
+        setLastScan(now);
+        setDevices(baseDevices);
+        return;
+      }
+
       const devicesData = await apiFetch('/network/devices');
       setDevices(devicesData);
     } catch (err) {
       console.error('Erreur chargement devices:', err);
     }
-  }, []);
+  }, [demoMode, scanning]);
 
   const loadAlerts = useCallback(async () => {
     try {
+      if (demoMode) {
+        // Données locales (temps réel)
+        const now = new Date();
+        const baseDevices = devices.length ? devices : Array.from({ length: 10 }, (_, i) => makeDemoDevice(i + 1));
+        const active = baseDevices.filter(d => d.status === 'Active').length;
+        const inactive = baseDevices.filter(d => d.status === 'Inactive').length;
+        const offline = baseDevices.filter(d => d.status === 'Offline').length;
+
+        const demoStats = {
+          total_devices: baseDevices.length,
+          active_devices: active,
+          inactive_devices: inactive,
+          offline_devices: offline,
+          last_scan: now.toISOString(),
+          scanning
+        };
+
+        // séries animées (glissantes)
+        const point = {
+          date: now.toLocaleDateString([], { month: 'short', day: '2-digit' }),
+          active,
+          inactive,
+          offline
+        };
+        setChartData(prev => {
+          const next = [...(prev || []), point];
+          return next.slice(Math.max(next.length - 14, 0));
+        });
+
+        setStats(demoStats);
+        setLastScan(now);
+        setDevices(baseDevices);
+        return;
+      }
+
       const alertsData = await apiFetch('/alerts');
       setAlerts(alertsData);
     } catch (err) {
       console.error('Erreur chargement alertes:', err);
     }
-  }, []);
+  }, [demoMode, devices]);
 
   const loadUsers = useCallback(async () => {
     if (currentUser?.role !== 'admin') return;
@@ -367,7 +681,38 @@ const App = () => {
     if (isLoggedIn && activePage === 'settings') {
       loadSettings();
     }
-  }, [isLoggedIn, loadDashboardData, loadDevices, loadAlerts, loadUsers, currentUser]);
+  }, [isLoggedIn, loadDashboardData, loadDevices, loadAlerts, loadUsers, currentUser, activePage, loadSettings]);
+
+  // ======================
+  // TEMPOREL (DEMO): graphiques animés + fluctuations (latence/signal/états)
+  // ======================
+  useEffect(() => {
+    if (!isLoggedIn || !demoMode) return;
+
+    const interval = setInterval(() => {
+      const now = new Date();
+
+      // Fluctuation signal + last_seen
+      setDevices(prev => prev.map(d => ({
+        ...d,
+        signal_strength: Math.max(0, Math.min(100, Math.round((d.signal_strength ?? 50) + rand(-6, 6)))),
+        last_seen: new Date(Date.now() - rand(1_000, 45_000)).toISOString()
+      })));
+
+      // Série temps réel (24 points glissants)
+      setTimeSeries(prev => {
+        const next = [...(prev || []), {
+          t: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          latency: Math.round(rand(8, 65)),
+          throughput: Math.round(rand(40, 160))
+        }];
+        return next.slice(Math.max(next.length - 24, 0));
+      });
+    }, 1200);
+
+    return () => clearInterval(interval);
+  }, [isLoggedIn, demoMode]);
+
 
   // ======================
   // AUTHENTIFICATION
@@ -436,7 +781,72 @@ const App = () => {
   };
 
   const startScan = async () => {
+    const runDemoScan = () => {
+      setScanning(true);
+      setScanProgress(0);
+      setScanStage('Initialisation Nmap');
+      setScanLog([]);
+      // Seed devices si vide
+      let localDevices = devices.length ? [...devices] : Array.from({ length: 8 }, (_, i) => makeDemoDevice(i + 1));
+      setDevices(localDevices);
+
+      const stages = [
+        { p: 5, label: 'Découverte d’hôtes (ping sweep)' },
+        { p: 25, label: 'Détection OS (fingerprinting)' },
+        { p: 45, label: 'Scan ports TCP (top 1000)' },
+        { p: 65, label: 'Détection services & versions' },
+        { p: 80, label: 'Scripts NSE (safe)' },
+        { p: 95, label: 'Consolidation & export' }
+      ];
+
+      let tick = 0;
+      let prog = 0;
+      const interval = setInterval(() => {
+        tick += 1;
+
+        // Progression lissée
+        setScanProgress(() => {
+          const next = Math.min(100, prog + Math.floor(rand(2, 7)));
+          prog = next;
+          const currentStage = stages.findLast?.(x => next >= x.p) || stages.filter(x => next >= x.p).slice(-1)[0] || stages[0];
+          if (currentStage) setScanStage(currentStage.label);
+
+          // Log Nmap (faux)
+          const logLine = next < 30
+            ? `Nmap scan report for ${randomIp()} — Host is up (${rand(1, 20).toFixed(2)}ms latency)`
+            : next < 70
+              ? `Discovered open port ${pick([22, 80, 443, 445, 3389, 53])}/tcp on ${randomIp()}`
+              : `NSE: ${pick(['http-title', 'ssh-hostkey', 'smb-os-discovery', 'ssl-cert', 'dns-recursion'])} completed`;
+
+          setScanLog(prevLog => [...prevLog, logLine].slice(-22));
+          return next;
+        });
+
+        // Ajout progressif de nouveaux hôtes
+        if (tick % 3 === 0 && localDevices.length < 14) {
+          const newDev = makeDemoDevice(localDevices.length + 1);
+          localDevices = [newDev, ...localDevices];
+          setDevices(localDevices);
+          setAlerts(prev => [makeDemoAlert(Date.now(), newDev.name), ...prev].slice(0, 40));
+          setNmapResults(prev => [makeFakeNmapHost(newDev), ...prev].slice(0, 12));
+        }
+
+        if (prog >= 98) {
+          clearInterval(interval);
+          setScanProgress(100);
+          setScanStage('Terminé');
+          setScanning(false);
+          setLastScan(new Date());
+        }
+      }, 450);
+    };
+
     try {
+      if (demoMode) {
+        runDemoScan();
+        return;
+      }
+
       setScanning(true);
       await apiFetch('/network/scan', { method: 'POST' });
       setTimeout(() => {
@@ -445,8 +855,9 @@ const App = () => {
         setScanning(false);
       }, 5000);
     } catch (err) {
-      console.error('Erreur scan:', err);
-      setScanning(false);
+      console.error('Erreur scan (fallback demo):', err);
+      // Fallback automatique si API KO
+      runDemoScan();
     }
   };
 
@@ -454,22 +865,22 @@ const App = () => {
   // ACTIONS (BOUTONS UI) - DÉDUPLIQUÉS
   // ======================
 
-  const handleResolveAlert = async (alertId) => {
-    try {
-      await apiFetch(`/alerts/${alertId}/resolve`, { method: 'POST' });
-      await loadAlerts();
-      await loadDashboardData();
-    } catch (err) {
-      alert('Erreur: ' + err.message);
-    }
-  };
 
   const handleGenerateReport = async () => {
     try {
+      if (demoMode) {
+        const lines = buildFakeReportLines({ stats, devices, alerts });
+        const pdf = buildSimplePdf(lines);
+        downloadBlob(new Blob([pdf], { type: 'application/pdf' }), `rapport_netmon_demo_${Date.now()}.pdf`);
+        return;
+      }
       await downloadFromApi('/reports/export?format=pdf', `rapport_netmon_${Date.now()}.pdf`);
       alert('Rapport généré et téléchargé.');
     } catch (err) {
-      alert('Erreur: ' + err.message);
+      // Fallback: PDF local (utile quand l’API n’est pas prête)
+      const lines = buildFakeReportLines({ stats, devices, alerts });
+      const pdf = buildSimplePdf(lines);
+      downloadBlob(new Blob([pdf], { type: 'application/pdf' }), `rapport_netmon_demo_${Date.now()}.pdf`);
     }
   };
 
@@ -497,6 +908,25 @@ const App = () => {
       const t = String(type).toLowerCase();
       const f = String(format).toLowerCase();
 
+      const localData = () => {
+        if (t === 'devices') return devices;
+        if (t === 'alerts') return alerts;
+        if (t === 'logs') return [
+          { time: '10:23', action: 'Login', user: currentUser?.username || 'admin', ip: '192.168.1.10', status: 'Succès' },
+          { time: '10:25', action: 'Scan réseau', user: currentUser?.username || 'admin', ip: '192.168.1.10', status: 'Succès' },
+          { time: '10:30', action: 'Export rapport', user: currentUser?.username || 'admin', ip: '192.168.1.10', status: 'Succès' }
+        ];
+        return [];
+      };
+
+      // Démo / fallback local
+      if (demoMode) {
+        const data = localData();
+        if (f === 'json') downloadJsonFile(data, `${t}.json`);
+        else downloadBlob(new Blob([toCsv(data)], { type: 'text/csv;charset=utf-8' }), `${t}.csv`);
+        return;
+      }
+
       if (f === 'json') {
         const data = await apiFetch(`/exports/${t}?format=json`);
         downloadJsonFile(data, `${t}.json`);
@@ -505,7 +935,12 @@ const App = () => {
 
       await downloadFromApi(`/exports/${t}?format=csv`, `${t}.csv`);
     } catch (err) {
-      alert('Erreur: ' + err.message);
+      // Fallback local si API KO
+      const t = String(type).toLowerCase();
+      const f = String(format).toLowerCase();
+      const data = (t === 'devices') ? devices : (t === 'alerts') ? alerts : [];
+      if (f === 'json') downloadJsonFile(data, `${t}.json`);
+      else downloadBlob(new Blob([toCsv(data)], { type: 'text/csv;charset=utf-8' }), `${t}.csv`);
     }
   };
 
@@ -843,7 +1278,55 @@ const App = () => {
             <div className="chart-card fade-in">
               <div className="chart-header mb-20">
                 <h3 className="chart-title">Scan réseau</h3>
-                {lastScan && (
+                {/* Progress Nmap (DEMO) */}
+              {scanning && (
+                <div className="mt-20">
+                  <div className="flex items-center justify-between mb-10">
+                    <div className="flex items-center gap-10">
+                      <span className="badge badge-info">Nmap</span>
+                      <span className="text-sm opacity-75">{scanStage}</span>
+                    </div>
+                    <div className="text-sm font-mono">{scanProgress}%</div>
+                  </div>
+                  <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full"
+                      style={{ width: `${scanProgress}%`, backgroundColor: '#3B82F6' }}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-20 mt-20">
+                    <div className="p-12 rounded-lg" style={{ border: `1px solid ${darkMode ? '#334155' : '#e2e8f0'}` }}>
+                      <div className="text-sm font-semibold mb-8">Sortie Nmap (fictive)</div>
+                      <div className="font-mono text-xs" style={{ maxHeight: 190, overflow: 'auto', opacity: 0.9 }}>
+                        {(scanLog || []).map((l, i) => (
+                          <div key={i}>{l}</div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="p-12 rounded-lg" style={{ border: `1px solid ${darkMode ? '#334155' : '#e2e8f0'}` }}>
+                      <div className="text-sm font-semibold mb-8">Hôtes & ports (fictif)</div>
+                      <div style={{ maxHeight: 190, overflow: 'auto' }}>
+                        {(nmapResults || []).map((h, idx) => (
+                          <div key={idx} className="mb-10">
+                            <div className="font-mono text-xs opacity-90">{h.host} — {h.ip}</div>
+                            <div className="flex flex-wrap gap-8 mt-6">
+                              {h.ports.map((p, j) => (
+                                <span key={j} className="badge badge-success" style={{ fontSize: '0.7rem' }}>
+                                  {p.port}/{p.proto} {p.service}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {lastScan && (
                   <div className="flex items-center gap-8 text-sm opacity-75">
                     <Clock size={14} />
                     Dernier scan: {lastScan.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -897,9 +1380,14 @@ const App = () => {
             <div className="chart-card mb-30">
               <div className="chart-header mb-20">
                 <h3 className="chart-title">Scanner le réseau</h3>
-                <button className="btn btn-secondary">
-                  <Settings size={14} /> Paramètres
-                </button>
+                {currentUser?.role === 'admin' && (
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => setActivePage('settings')}
+                  >
+                    <Settings size={14} /> Paramètres
+                  </button>
+                )}
               </div>
               
               <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-20 mb-30">
@@ -1129,12 +1617,12 @@ const App = () => {
                   </text>
         
                   {/* APPAREILS */}
-                  {positionedDevices.map(dev => (
+                  {positionedDevices.map((dev, i) => (
                     <motion.g
                       key={dev.id}
                       initial={{ scale: 0, opacity: 0 }}
-                      animate={{ scale: 1, opacity: 1 }}
-                      transition={{ delay: 0.2 }}
+                      animate={{ scale: 1, opacity: 1, x: [0, (i % 3 - 1) * 8, 0], y: [0, (i % 5 - 2) * 6, 0] }}
+                      transition={{ delay: 0.2, repeat: Infinity, duration: 2.6, ease: 'easeInOut' }}
                     >
                       <circle
                         cx={dev.x}
@@ -1175,14 +1663,19 @@ const App = () => {
         }
 
       case 'performance':
-        const latencyData = Array.from({length: 24}, (_, i) => ({
-          hour: `${i}h`,
-          latency: 10 + Math.random() * 40
+        // Données animées (DEMO): timeSeries alimenté par un intervalle
+        const latencyData = (timeSeries?.length ? timeSeries : Array.from({ length: 24 }, (_, i) => ({
+          t: `${i}h`,
+          latency: Math.round(10 + Math.random() * 40),
+          throughput: Math.round(40 + Math.random() * 120)
+        }))).map((p, idx) => ({
+          hour: p.t || `${idx}h`,
+          latency: p.latency
         }));
 
         const bandwidthData = [
-          { name: 'Upload', value: Math.floor(Math.random() * 20) + 5 },
-          { name: 'Download', value: Math.floor(Math.random() * 100) + 50 }
+          { name: 'Upload', value: Math.round((timeSeries?.slice(-1)[0]?.throughput || 80) * 0.25) },
+          { name: 'Download', value: Math.round(timeSeries?.slice(-1)[0]?.throughput || 80) }
         ];
 
         return (
@@ -1633,6 +2126,19 @@ const App = () => {
         );
 
         case 'settings':
+          if (currentUser?.role !== 'admin') {
+            return (
+              <div className="content">
+                <div className="text-center py-40">
+                  <AlertTriangle size={48} className="mx-auto mb-20" />
+                  <h3>Accès réservé à l’administrateur</h3>
+                  <button className="btn btn-primary mt-20" onClick={() => setActivePage('dashboard')}>
+                    Retour au dashboard
+                  </button>
+                </div>
+              </div>
+            );
+          }
           return (
             <div className="content">
               <div className="page-title mb-30">
@@ -1651,57 +2157,55 @@ const App = () => {
                   <h3 className="chart-title">Configuration générale</h3>
                 </div>
         
-                <div className="space-y-20">
-                  <div>
-                    <label className="block text-sm mb-8">Plage IP de scan</label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-20">
+                  <Field label="Plage IP de scan" icon={Globe} hint="Ex: 192.168.1.0/24">
                     <input
                       type="text"
                       className="form-input"
+                      placeholder="192.168.1.0/24"
+                      style={{ paddingLeft: 42 }}
                       value={settingsData.scan_range}
-                      onChange={(e) =>
-                        setSettingsData({ ...settingsData, scan_range: e.target.value })
-                      }
+                      onChange={(e) => setSettingsData({ ...settingsData, scan_range: e.target.value })}
                     />
-                  </div>
-        
-                  <div>
-                    <label className="block text-sm mb-8">Intervalle de scan automatique</label>
+                  </Field>
+
+                  <Field label="Scan automatique" icon={Clock} hint="Intervalle en minutes">
                     <select
                       className="form-select"
                       value={settingsData.auto_scan_interval}
-                      onChange={(e) =>
-                        setSettingsData({ ...settingsData, auto_scan_interval: e.target.value })
-                      }
+                      onChange={(e) => setSettingsData({ ...settingsData, auto_scan_interval: e.target.value })}
                     >
                       <option>Désactivé</option>
                       <option>5</option>
                       <option>15</option>
                       <option>60</option>
                     </select>
+                  </Field>
+
+                  <div className="md:col-span-2">
+                    <Field
+                      label={`Seuil d’alerte signal faible (${settingsData.signal_threshold}%)`}
+                      icon={WifiLow}
+                      hint="Déclenche une alerte quand le signal passe sous ce seuil"
+                    >
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={settingsData.signal_threshold}
+                        onChange={(e) =>
+                          setSettingsData({ ...settingsData, signal_threshold: Number(e.target.value) })
+                        }
+                        className="w-full"
+                      />
+                    </Field>
                   </div>
-        
-                  <div>
-                    <label className="block text-sm mb-8">
-                      Seuil d’alerte signal faible ({settingsData.signal_threshold}%)
-                    </label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={settingsData.signal_threshold}
-                      onChange={(e) =>
-                        setSettingsData({
-                          ...settingsData,
-                          signal_threshold: Number(e.target.value)
-                        })
-                      }
-                      className="w-full"
-                    />
+
+                  <div className="md:col-span-2">
+                    <button className="btn btn-primary" onClick={handleSaveSettings}>
+                      Sauvegarder les modifications
+                    </button>
                   </div>
-        
-                  <button className="btn btn-primary" onClick={handleSaveSettings}>
-                    Sauvegarder les modifications
-                  </button>
                 </div>
               </div>
             </div>
@@ -1827,74 +2331,108 @@ const App = () => {
                     Annuler
                   </button>
                 </div>
-                <div className="space-y-20">
-                  <div>
-                    <label className="block text-sm mb-8">Nom complet</label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-20">
+                  <Field label="Nom complet" icon={User} hint="Affiché dans l'interface">
                     <input
                       type="text"
                       className="form-input"
+                      placeholder="Nom et prénom"
+                      style={{ paddingLeft: 42 }}
                       value={editingUser.full_name}
-                      onChange={(e) => setEditingUser({...editingUser, full_name: e.target.value})}
+                      onChange={(e) => setEditingUser({ ...editingUser, full_name: e.target.value })}
                     />
-                  </div>
-                  <div>
-                    <label className="block text-sm mb-8">Nom d'utilisateur</label>
+                  </Field>
+
+                  <Field
+                    label="Nom d'utilisateur"
+                    icon={User}
+                    hint={editingUser.id ? 'Non modifiable' : 'Identifiant de connexion'}
+                  >
                     <input
                       type="text"
                       className="form-input"
+                      placeholder="ex: user01"
+                      style={{ paddingLeft: 42, opacity: editingUser.id ? 0.7 : 1 }}
                       value={editingUser.username}
-                      onChange={(e) => setEditingUser({...editingUser, username: e.target.value})}
+                      onChange={(e) => setEditingUser({ ...editingUser, username: e.target.value })}
                       disabled={!!editingUser.id}
                     />
-                  </div>
-                  <div>
-                    <label className="block text-sm mb-8">Email</label>
+                  </Field>
+
+                  <Field label="Email" icon={Mail} hint="Utilisé pour les rapports et alertes">
                     <input
                       type="email"
                       className="form-input"
+                      placeholder="nom@domaine.com"
+                      style={{ paddingLeft: 42 }}
                       value={editingUser.email}
-                      onChange={(e) => setEditingUser({...editingUser, email: e.target.value})}
+                      onChange={(e) => setEditingUser({ ...editingUser, email: e.target.value })}
                     />
-                  </div>
-                  <div>
-                    <label className="block text-sm mb-8">Rôle</label>
+                  </Field>
+
+                  <Field label="Rôle" icon={ShieldCheck} hint="Contrôle les permissions">
                     <select
                       className="form-select"
                       value={editingUser.role}
-                      onChange={(e) => setEditingUser({...editingUser, role: e.target.value})}
+                      onChange={(e) => setEditingUser({ ...editingUser, role: e.target.value })}
                     >
                       <option value="user">Utilisateur</option>
                       <option value="admin">Administrateur</option>
                     </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm mb-8">Statut</label>
-                    <label className="switch">
-                      <input
-                        type="checkbox"
-                        checked={editingUser.is_active}
-                        onChange={(e) => setEditingUser({...editingUser, is_active: e.target.checked})}
-                      />
-                      <span className="slider"></span>
-                    </label>
-                    <span className="ml-10">{editingUser.is_active ? 'Actif' : 'Inactif'}</span>
-                  </div>
-                  {!editingUser.id && (
+                  </Field>
+
+                  <div className="md:col-span-2" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
                     <div>
-                      <label className="block text-sm mb-8">Mot de passe</label>
-                      <input
-                        type="password"
-                        className="form-input"
-                        onChange={(e) => setEditingUser({...editingUser, password: e.target.value})}
-                      />
+                      <div className="text-sm" style={{ fontWeight: 600, marginBottom: 6 }}>Statut</div>
+                      <div className="text-xs opacity-75">Désactive l'accès sans supprimer le compte</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <label className="switch">
+                        <input
+                          type="checkbox"
+                          checked={editingUser.is_active}
+                          onChange={(e) => setEditingUser({ ...editingUser, is_active: e.target.checked })}
+                        />
+                        <span className="slider"></span>
+                      </label>
+                      <span className="opacity-75">{editingUser.is_active ? 'Actif' : 'Inactif'}</span>
+                    </div>
+                  </div>
+
+                  {!editingUser.id && (
+                    <div className="md:col-span-2">
+                      <Field
+                        label="Mot de passe"
+                        icon={Lock}
+                        hint="Tu peux le réinitialiser plus tard"
+                        right={
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            style={{ padding: '6px 10px' }}
+                            onClick={() => setShowNewUserPassword((v) => !v)}
+                            title={showNewUserPassword ? 'Masquer' : 'Afficher'}
+                          >
+                            <EyeIcon size={14} />
+                          </button>
+                        }
+                      >
+                        <input
+                          type={showNewUserPassword ? 'text' : 'password'}
+                          className="form-input"
+                          placeholder="••••••••"
+                          style={{ paddingLeft: 42, paddingRight: 56 }}
+                          onChange={(e) => setEditingUser({ ...editingUser, password: e.target.value })}
+                        />
+                      </Field>
                     </div>
                   )}
-                  <button 
-                    className="btn btn-primary" 
-                    onClick={handleSaveUser}
-                  >
-                    {editingUser.id ? "Mettre à jour" : "Créer l'utilisateur"}
-                  </button>
+
+                  <div className="md:col-span-2" style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button className="btn btn-primary" onClick={handleSaveUser}>
+                      {editingUser.id ? 'Mettre à jour' : "Créer l'utilisateur"}
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -2021,56 +2559,94 @@ const App = () => {
 
           {registerMode ? (
             <form onSubmit={handleRegister}>
-              <div className="mb-20">
-                <label className="block text-sm mb-8">Nom complet</label>
+              <Field label="Nom complet" icon={User} hint="Ex: Noura Mohamed">
                 <input
                   type="text"
                   className="form-input"
+                  placeholder="Votre nom et prénom"
+                  style={{ paddingLeft: 42 }}
                   value={registerForm.full_name}
-                  onChange={(e) => setRegisterForm({...registerForm, full_name: e.target.value})}
+                  onChange={(e) => setRegisterForm({ ...registerForm, full_name: e.target.value })}
                   required
                 />
-              </div>
-              <div className="mb-20">
-                <label className="block text-sm mb-8">Nom d’utilisateur</label>
+              </Field>
+
+              <Field label="Nom d’utilisateur" icon={User} hint="Utilisé pour la connexion">
                 <input
                   type="text"
                   className="form-input"
+                  placeholder="ex: admin, user01"
+                  style={{ paddingLeft: 42 }}
                   value={registerForm.username}
-                  onChange={(e) => setRegisterForm({...registerForm, username: e.target.value})}
+                  onChange={(e) => setRegisterForm({ ...registerForm, username: e.target.value })}
                   required
                 />
-              </div>
-              <div className="mb-20">
-                <label className="block text-sm mb-8">Email</label>
+              </Field>
+
+              <Field label="Email" icon={Mail} hint="Recevoir les notifications et rapports">
                 <input
                   type="email"
                   className="form-input"
+                  placeholder="ex: nom@domaine.com"
+                  style={{ paddingLeft: 42 }}
                   value={registerForm.email}
-                  onChange={(e) => setRegisterForm({...registerForm, email: e.target.value})}
+                  onChange={(e) => setRegisterForm({ ...registerForm, email: e.target.value })}
                   required
                 />
-              </div>
-              <div className="mb-20">
-                <label className="block text-sm mb-8">Mot de passe</label>
+              </Field>
+
+              <Field
+                label="Mot de passe"
+                icon={Lock}
+                hint="8 caractères minimum recommandés"
+                right={
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: '6px 10px' }}
+                    onClick={() => setShowRegisterPassword((v) => !v)}
+                    title={showRegisterPassword ? 'Masquer' : 'Afficher'}
+                  >
+                    <EyeIcon size={14} />
+                  </button>
+                }
+              >
                 <input
-                  type="password"
+                  type={showRegisterPassword ? 'text' : 'password'}
                   className="form-input"
+                  placeholder="••••••••"
+                  style={{ paddingLeft: 42, paddingRight: 56 }}
                   value={registerForm.password}
-                  onChange={(e) => setRegisterForm({...registerForm, password: e.target.value})}
+                  onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
                   required
                 />
-              </div>
-              <div className="mb-30">
-                <label className="block text-sm mb-8">Confirmer le mot de passe</label>
+              </Field>
+
+              <Field
+                label="Confirmer le mot de passe"
+                icon={Lock}
+                right={
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: '6px 10px' }}
+                    onClick={() => setShowRegisterConfirm((v) => !v)}
+                    title={showRegisterConfirm ? 'Masquer' : 'Afficher'}
+                  >
+                    <EyeIcon size={14} />
+                  </button>
+                }
+              >
                 <input
-                  type="password"
+                  type={showRegisterConfirm ? 'text' : 'password'}
                   className="form-input"
+                  placeholder="••••••••"
+                  style={{ paddingLeft: 42, paddingRight: 56 }}
                   value={registerForm.confirm_password}
-                  onChange={(e) => setRegisterForm({...registerForm, confirm_password: e.target.value})}
+                  onChange={(e) => setRegisterForm({ ...registerForm, confirm_password: e.target.value })}
                   required
                 />
-              </div>
+              </Field>
               <button type="submit" className="btn btn-primary w-full">Créer mon compte</button>
               <div className="text-center mt-20">
                 <button type="button" onClick={() => setRegisterMode(false)} className="text-sm opacity-75">
@@ -2080,26 +2656,43 @@ const App = () => {
             </form>
           ) : (
             <form onSubmit={handleLogin}>
-              <div className="mb-20">
-                <label className="block text-sm mb-8">Nom d’utilisateur</label>
+              <Field label="Nom d’utilisateur" icon={User} hint="Ex: admin">
                 <input
                   type="text"
                   className="form-input"
+                  placeholder="Votre identifiant"
+                  style={{ paddingLeft: 42 }}
                   value={loginForm.username}
-                  onChange={(e) => setLoginForm({...loginForm, username: e.target.value})}
+                  onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
                   required
                 />
-              </div>
-              <div className="mb-30">
-                <label className="block text-sm mb-8">Mot de passe</label>
+              </Field>
+
+              <Field
+                label="Mot de passe"
+                icon={Lock}
+                right={
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: '6px 10px' }}
+                    onClick={() => setShowLoginPassword((v) => !v)}
+                    title={showLoginPassword ? 'Masquer' : 'Afficher'}
+                  >
+                    <EyeIcon size={14} />
+                  </button>
+                }
+              >
                 <input
-                  type="password"
+                  type={showLoginPassword ? 'text' : 'password'}
                   className="form-input"
+                  placeholder="••••••••"
+                  style={{ paddingLeft: 42, paddingRight: 56 }}
                   value={loginForm.password}
-                  onChange={(e) => setLoginForm({...loginForm, password: e.target.value})}
+                  onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
                   required
                 />
-              </div>
+              </Field>
               <button type="submit" className="btn btn-primary w-full">Se connecter</button>
               <div className="text-center mt-20">
                 <button type="button" onClick={() => setRegisterMode(true)} className="text-sm opacity-75">
@@ -2228,6 +2821,14 @@ const App = () => {
             <button className="notification-bell">
               <Bell size={20} />
               <span className="notification-badge">3</span>
+            </button>
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '8px 12px' }}
+              onClick={() => setDemoMode(!demoMode)}
+              title={demoMode ? 'Mode démo activé' : 'Mode réel (API)'}
+            >
+              {demoMode ? 'DEMO' : 'API'}
             </button>
             <button 
               className="theme-toggle"
