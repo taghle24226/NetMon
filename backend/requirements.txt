@@ -2,7 +2,7 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 alembic
-pydantic
+pydantic[email]
 python-multipart
 python-jose[cryptography]
 passlib[bcrypt]
