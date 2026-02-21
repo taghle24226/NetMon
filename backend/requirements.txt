@@ -4,3 +4,4 @@ sqlalchemy
 alembic
 pydantic
 python-multipart
+python-jose[cryptography]
